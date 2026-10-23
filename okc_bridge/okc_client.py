@@ -11,6 +11,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 TERMINAL = {"done", "failed", "rejected", "duplicate"}
@@ -60,12 +62,24 @@ def job_id(out: dict) -> str | None:
     return out.get("id") or out.get("job_id") or (out.get("job") or {}).get("id")
 
 
-def wait(job: str, cwd: Path, timeout: float = 5400) -> dict:
-    """Follow a job to the end, in the submitted file's directory so okc's profile lands there."""
-    out = _run(["status", job, "--wait", "--json"], cwd=cwd, timeout=timeout)
-    if out.get("status") not in TERMINAL:
-        raise OkcError(f"job {job} still {out.get('status')}")
-    return out
+def wait(job: str, cwd: Path, timeout: float = 5400, outage: float = 12 * 3600) -> dict:
+    """Follow a job to the end, in the submitted file's directory so okc's profile lands there.
+    Rides out network outages and sleeps (the job keeps running at the judge) for up to `outage`."""
+    give_up = time.time() + outage
+    while True:
+        try:
+            out = _run(["status", job, "--wait", "--json"], cwd=cwd, timeout=timeout)
+        except (OkcError, subprocess.TimeoutExpired) as e:
+            if time.time() > give_up:
+                raise OkcError(f"job {job}: gave up waiting: {e}") from None
+            print(f"okc wait {job}: {e}; retrying in 60 s", file=sys.stderr, flush=True)
+            time.sleep(60)
+            continue
+        if out.get("status") in TERMINAL:
+            return out
+        if time.time() > give_up:
+            raise OkcError(f"job {job} still {out.get('status')}")
+        time.sleep(30)
 
 
 def withdraw(job: str) -> str:

@@ -32,6 +32,7 @@ Usage:
   broker.py wait-reset --problem P                   (blocks until a slot is free)
   broker.py inflight                                 (JSON: started jobs not finished yet)
   broker.py best-code --problem P --out F            (the fastest passing file of P, for composition)
+  broker.py standings --problem P                    (JSON: the public board, where we stand; read-only)
 
 A file $AKO_OKC_STATE/STOP stops new official evaluations (STOPPED); see stop_at.py.
 """
@@ -460,6 +461,19 @@ def inflight() -> list[dict]:
     return out
 
 
+def standings(problem: str) -> dict:
+    """The problem's public board (read-only, no slot spent): our rank and speedup, the
+    leader's, and the speedup it takes to reach each rank band."""
+    board = okc.leaderboard(problem)
+    rows = board.get("rows") or []
+    you = board.get("you") or {}
+    at = lambda r: rows[r - 1]["speedup"] if len(rows) >= r else None
+    return {"problem": problem, "entries": len(rows), "rank": you.get("rank"), "speedup": you.get("speedup"),
+            "leader": at(1), "needed": {f"top{r}": at(r) for r in (3, 10, 25, 50)},
+            "top10": [{"rank": r["rank"], "speedup": r["speedup"], "attempts": r.get("attempts")}
+                      for r in rows[:10]]}
+
+
 def unaccounted(problem: str, b: dict) -> int:
     """Official runs today the broker didn't start (made by hand or by another tool)."""
     ours = {e["job"] for e in read_evals(problem) if e.get("event") == "started" and e["utc_day"] == utc_day()}
@@ -547,6 +561,8 @@ def main():
     bc = sub.add_parser("best-code")
     bc.add_argument("--problem", required=True)
     bc.add_argument("--out", required=True, help="write the file here")
+    st = sub.add_parser("standings")
+    st.add_argument("--problem", required=True)
     wr = sub.add_parser("wait-reset")
     wr.add_argument("--problem", required=True)
     a = p.parse_args()
@@ -605,6 +621,8 @@ def main():
         print(json.dumps({k: row.get(k) for k in ("job", "kind", "speedup", "ci", "loads", "label", "child")}))
     elif a.cmd == "inflight":
         print(json.dumps(inflight(), indent=1))
+    elif a.cmd == "standings":
+        print(json.dumps(standings(a.problem), indent=1))
     elif a.cmd == "wait-reset":
         print(json.dumps(cmd_wait_reset(a, cfg)))
 
