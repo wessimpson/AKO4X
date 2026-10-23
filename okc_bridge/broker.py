@@ -243,6 +243,16 @@ def by_sha(problem: str, sha: str) -> dict | None:
     return None
 
 
+def inflight_by_sha(problem: str, sha: str) -> dict | None:
+    """A job already at the judge for this exact file (its bench was killed before recording it)."""
+    evals = read_evals(problem)
+    done = {e["job"] for e in evals if e.get("event") == "finished"}
+    for e in reversed(evals):
+        if e.get("event") == "started" and e["sha256"] == sha and e["job"] not in done:
+            return e
+    return None
+
+
 def round_used(problem: str, child: str) -> int:
     """Official evaluations a child spent: jobs it started, minus the judge's free duplicates."""
     evals = read_evals(problem)
@@ -286,6 +296,10 @@ def submit(problem: str, code: str, kind: str, cfg: dict, *, child: str, label: 
 
 def finish(problem: str, job: str, stage: Path, *, child: str, label: str, sha: str, kind: str) -> dict:
     raw = okc.wait(job, stage)
+    with global_lock():  # two benches waiting on one job record it once
+        prev = next((e for e in finished(problem) if e["job"] == job), None)
+    if prev:
+        return prev
     d = pdir(problem)
     (d / "jobs" / f"{job}.json").write_text(json.dumps(raw, indent=1))
     judged = raw
@@ -338,13 +352,20 @@ def cmd_eval(a, cfg) -> dict:
             return gate_row(a.problem, a.child, a.label, sha, "STOPPED",
                             "the campaign has been stopped; no new official evaluations. "
                             "Write your synthesis and end the session")
-        b = budget(a.problem, cfg)
-        kind = b["next_kind"]
-        if kind is None:
-            return gate_row(a.problem, a.child, a.label, sha, "BUDGET_EXHAUSTED",
-                            f"no official evaluations left today; resets in {b['resets_in_s'] // 3600}h"
-                            f"{b['resets_in_s'] % 3600 // 60:02d}m", budget=b)
-        job, stage = submit(a.problem, code, kind, cfg, child=a.child, label=a.label)
+        pending = inflight_by_sha(a.problem, sha)
+        if not pending:
+            b = budget(a.problem, cfg)
+            kind = b["next_kind"]
+            if kind is None:
+                return gate_row(a.problem, a.child, a.label, sha, "BUDGET_EXHAUSTED",
+                                f"no official evaluations left today; resets in {b['resets_in_s'] // 3600}h"
+                                f"{b['resets_in_s'] % 3600 // 60:02d}m", budget=b)
+            job, stage = submit(a.problem, code, kind, cfg, child=a.child, label=a.label)
+    if pending:
+        # Same file already at the judge: wait on that job instead of spending another slot.
+        row = finish(a.problem, pending["job"], pdir(a.problem) / "stage" / sha[:16],
+                     child=pending["child"], label=pending["label"], sha=sha, kind=pending["kind"])
+        return dict(row, reattached=True, lint=warns)
     row = finish(a.problem, job, stage, child=a.child, label=a.label, sha=sha, kind=kind)
     row["lint"] = warns
     return row
@@ -456,6 +477,8 @@ def render(row: dict) -> str:
         return "\n".join(lines)
     kind = "SCORED RUN (on the public board)" if row.get("kind") == "run" else "check (off the board)"
     tag = " [cached: same file as an earlier job; nothing spent]" if row.get("cached") else ""
+    if row.get("reattached"):
+        tag += " [this file was already at the judge from an interrupted bench: waited on that job, nothing new spent]"
     if st == "duplicate":
         tag += f" [{row.get('message')}]"
     lines.append(f"okc {kind} job {row.get('job')}: {st}{tag}")

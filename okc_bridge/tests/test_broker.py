@@ -55,5 +55,28 @@ class Summary(unittest.TestCase):
         self.assertEqual(set(s["loads"]), {"decode 1", "decode 16", "decode 32", "verify 1", "verify 16", "verify 32"})
 
 
+class Reattach(unittest.TestCase):
+    def test_rerun_of_interrupted_bench_waits_on_the_same_job(self):
+        import types
+        problem, code = "muse_bf16_proj", "# okc: problem=muse_bf16_proj\ndef kernel_fn(data, config):\n    return data\n"
+        sha = __import__("hashlib").sha256(code.encode()).hexdigest()
+        broker.append_eval(problem, {"event": "started", "ts": 0, "utc_day": "x", "problem": problem,
+                                     "child": "c1", "label": "iter-1", "sha256": sha, "kind": "run", "job": "J1"})
+        f = Path(os.environ["AKO_OKC_STATE"]) / "s.py"
+        f.write_text(code)
+        submitted, waited = [], []
+        broker.submit = lambda *a, **k: submitted.append(a) or ("J2", Path("."))
+        broker.okc.wait = lambda job, cwd: waited.append(job) or {"status": "done", "result": {"passed": True}}
+        broker.budget = lambda *a: self.fail("budget should not be consulted")
+        a = types.SimpleNamespace(file=str(f), problem=problem, child="c1", label="iter-1 again")
+        cfg = {"round": {"max_evals": 6}, "track": {"closes": "2099-01-01T00:00:00+00:00"}}
+        row = broker.cmd_eval(a, cfg)
+        self.assertEqual((submitted, waited, row["job"], row["kind"], row["reattached"]), ([], ["J1"], "J1", "run", True))
+        self.assertIs(broker.inflight_by_sha(problem, sha), None)
+        again = broker.finish(problem, "J1", Path("."), child="c1", label="x", sha=sha, kind="run")
+        self.assertEqual(sum(e["job"] == "J1" for e in broker.finished(problem)), 1)
+        self.assertEqual(again["label"], "iter-1")
+
+
 if __name__ == "__main__":
     unittest.main()
