@@ -38,6 +38,10 @@ ERROR_RE = re.compile(r"API Error|Connection error|ECONNRESET|ETIMEDOUT|ENOTFOUN
                       r"Overloaded|overloaded_error|hit your limit|usage limit", re.I)
 BUSY_RE = re.compile(r"esc to interrupt|still running|shells? running|running in background|"
                      r"\d+ shells?\b|\bbackground task", re.I)
+NO_SUB_S = 10 * 60           # a campaign with no sub running this long, local H200 available -> start a round
+LOCAL_NUDGE = ("The local H200 is available and this campaign has had no sub running for over 10 minutes. "
+               "Don't wait idle: start the next round now (a local-only round if today's official slots are "
+               "spent; the sub iterates on scripts/local_bench.sh), and keep any reset wait running.")
 NUDGE = ("The laptop slept and the network dropped for a while, so a step may have failed. "
          "Check your background tasks and the broker's results, redo whatever failed, and carry on "
          "with the campaign loop.")
@@ -71,6 +75,20 @@ def reap(row: dict) -> None:
         reaping.discard(row["job"])
 
 
+def subs_running() -> set[str]:
+    """Campaign families (muse-bf16-proj, ...) with a sub session (claude --print) working in a round child."""
+    out = subprocess.run(["ps", "-Ao", "command"], capture_output=True, text=True).stdout
+    return {m.group(1) for line in out.splitlines() if "--print" in line
+            for m in re.finditer(r"ako4x-run-(muse-[a-z0-9-]+?)-r\d+", line)}
+
+
+def local_available() -> bool:
+    d = broker.state_root() / "sidecar"
+    beat = d / "guard_heartbeat"
+    return ((d / "pod.json").is_file() and not (d / "disabled").exists() and beat.is_file()
+            and time.time() - float(beat.read_text() or 0) < 180)
+
+
 def masters() -> list[str]:
     out = subprocess.run(["tmux", "ls", "-F", "#{session_name}"], capture_output=True, text=True).stdout.split()
     return [s for s in out if s.startswith("okc-muse-")]
@@ -79,6 +97,7 @@ def masters() -> list[str]:
 def main():
     seen: dict[str, tuple[str, float]] = {}   # session -> (screen hash, since)
     nudged: dict[str, float] = {}
+    no_sub: dict[str, float] = {}        # session -> since when no sub has been running
     last = time.time()
     log("watchdog up")
     while True:
@@ -98,7 +117,21 @@ def main():
                 reaping.add(row["job"])
                 threading.Thread(target=reap, args=(row,), daemon=True).start()
 
+        running, avail = subs_running(), local_available()
         for s in masters():
+            fam = s[len("okc-"):]
+            if fam in running or not avail:
+                no_sub.pop(s, None)
+            else:
+                no_sub.setdefault(s, now)
+                if now - no_sub[s] > NO_SUB_S and now - nudged.get(s, 0) > NUDGE_EVERY_S:
+                    subprocess.run(["tmux", "send-keys", "-t", s, "C-u"])
+                    subprocess.run(["tmux", "send-keys", "-t", s, "-l", LOCAL_NUDGE])
+                    time.sleep(1)
+                    subprocess.run(["tmux", "send-keys", "-t", s, "Enter"])
+                    nudged[s] = now
+                    log(f"nudged {s}: no sub running for {(now - no_sub[s]) / 60:.0f} min with the local H200 up")
+                    continue
             screen = subprocess.run(["tmux", "capture-pane", "-p", "-t", s], capture_output=True, text=True).stdout
             h = hashlib.sha256(screen.encode()).hexdigest()
             if s not in seen or seen[s][0] != h:

@@ -59,3 +59,7 @@ Subs now have `bash scripts/local_bench.sh` (okc_bridge/local.py): a copy of the
 - In phase-1 prompts, expect and ask for local iteration: sweeps of tile and pipeline configurations, edge-shape tests, A/B comparisons between variants, measurement before choosing a direction. One official evaluation per *locally proven* structural change, not per guess.
 - The record of truth is still the judge. Step 8 archives, ranks and promotes from `okc_round_results` only; local results (`python3 okc_bridge/local.py results --problem P --child C`) are context, and their output carries a calibration note (judge/sidecar speedup ratio on files both have timed). Never archive, promote or argue compliance from a local number.
 - `LOCAL_UNAVAILABLE` (pod off, budget spent, guard down) means the round runs as before.
+
+## Keep the local H200 busy
+
+While the local H200 is up (`scripts/local_bench.sh` answers, not `LOCAL_UNAVAILABLE`), this campaign always has a sub running. When a round ends and today's official slots are spent, start the next round right away as a **local-only round** (the sub iterates on `local_bench.sh` and ends with its best locally proven file); keep the reset wait running in the background. At the reset, the next round's first official bench is the last local round's file. The watchdog reminds a master whose campaign has had no sub for 10 minutes.
