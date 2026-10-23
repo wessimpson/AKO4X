@@ -83,6 +83,8 @@ def main():
             + ", ".join(j["job"] for j in jobs) + ")")
     time.sleep(20)  # let the last bench write its snapshot
 
+    pg = subprocess.run([sys.executable, str(HERE / "pod_guard.py"), "stop"], capture_output=True, text=True)
+    log(f"local H200: {(pg.stdout or pg.stderr).strip()[-300:] or 'stopped'}")
     sessions = subprocess.run(["tmux", "ls", "-F", "#{session_name}"], capture_output=True, text=True).stdout.split()
     for s in sessions:
         if s.startswith("okc-") and s != "okc-stop":

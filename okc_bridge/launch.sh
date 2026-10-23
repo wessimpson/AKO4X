@@ -78,3 +78,15 @@ JSON
     tmux send-keys -t "$SESSION" "env $UNSETS claude $(printf '%q' "$PROMPT")" Enter
     echo "started $SESSION in $WT (tmux attach -t $SESSION)"
 done
+
+# Helpers shared by every campaign: the watchdog (records orphaned judge jobs, nudges stalled masters)
+# and the pod guard (runs the local H200 on demand, idle-stops it, enforces [sidecar] budget_usd).
+for helper in watchdog pod_guard; do
+    SESSION="okc-${helper/_/}"
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        echo "$SESSION already running"
+    else
+        tmux new-session -d -s "$SESSION" "cd '$REPO' && python3 okc_bridge/$helper.py run 2>&1 | tee -a '$STATE/$helper.out'"
+        echo "started $SESSION"
+    fi
+done

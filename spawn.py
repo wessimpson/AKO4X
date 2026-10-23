@@ -917,6 +917,7 @@ def populate_child_okc(child_dir, *, operator, problem_dir, kernel_path, agent_c
         f'[okc]\n'
         f'problem = "{operator}"\n'
         f'broker = "{broker}"\n'
+        f'local = "{(PARENT_DIR / "okc_bridge" / "local.py").resolve()}"\n'
         f'python = "{sys.executable}"\n'
         f'\n'
         f'[benchmark]\n'
@@ -935,11 +936,12 @@ def populate_child_okc(child_dir, *, operator, problem_dir, kernel_path, agent_c
                   f"({len(copied)} files: {', '.join(copied)})")
 
     py = sys.executable
-    for name in ("run_okc.py", "profile_okc.py"):
+    for name in ("run_okc.py", "profile_okc.py", "run_sidecar.py"):
         shutil.copy2(PARENT_DIR / "scripts" / "okc" / name, child_dir / "scripts" / name)
     prelude = '#!/bin/bash\ncd "$(dirname "$0")/.." || exit 1\n'
     scripts = {
         "bench.sh": prelude + f'"{py}" scripts/run_okc.py "$@"\n',
+        "local_bench.sh": prelude + f'"{py}" scripts/run_sidecar.py "$@"\n',
         "profile.sh": prelude + f'"{py}" scripts/profile_okc.py "$@"\n',
         "lint.sh": prelude + f'"{py}" "{broker}" lint --problem {operator} --file solution/submission.py\n',
         "budget.sh": prelude + f'"{py}" "{broker}" status --problem {operator} --child "$(basename "$PWD")"\n',

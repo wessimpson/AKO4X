@@ -27,6 +27,7 @@ patterns = [
     r"OKC_TOKEN",                                # its token
     r"\bapi\s+token\b",                          # okc api token
     r"/okc/config\.json",                        # its saved token
+    r"runpod_key|RUNPOD_API_KEY|pod_guard\.py",   # the RunPod credit: only the parent's pod guard runs the pod
     r"broker\.py",                               # the parent-side broker, other than via bench.sh
 ]
 sys.exit(0 if any(re.search(p, cmd) for p in patterns) else 1)

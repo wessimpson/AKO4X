@@ -48,7 +48,16 @@ There is **no local GPU**. Every `bash scripts/bench.sh --label "..."` sends `so
   - `bash scripts/profile.sh [--label L | --list]` — the judge's per-kernel GPU-time profile of an evaluated snapshot.
   - `python3 -m py_compile solution/submission.py`; CPU-only PyTorch is installed locally, good for checking index math or weight-repacking logic on tiny tensors (no CUDA, no Triton).
 
-Because each evaluation costs so much, review every change hard before you bench it: re-read the kernel against `docs/reference.py`, check edge shapes from the tests in `docs/TASK.md` (odd m, m not a multiple of the tile, the largest sizes), graph capturability, dtypes, and that compiling fits the run's 10-minute limit. One careful, well-reasoned change per evaluation beats several speculative ones. A failure message names the first failing case; `print()` output (not tensor values inside `kernel_fn`) comes back in the snapshot's `judge.log`.
+### The local H200 (free, and the main way you iterate)
+
+`bash scripts/local_bench.sh --label "local-N description"` runs `solution/submission.py` on a rented H200 SXM that runs a copy of the judge (the same tests, the same CUDA-graph timing against SGLang with a cold L2, the same per-shape table and kernel profile). It spends **no** official evaluation, so use it as often as you need: to check that a change compiles and passes, to compare variants and tile configurations, to test the edge shapes, and to measure before you commit to a direction. Each call takes a few minutes, and the GPU is shared with the other runs, so a call can queue; run it in the background and keep working.
+
+- It is **not the judge.** Its output says how far its speedups have sat from the judge's on files both have timed (the calibration note); trust rankings between your own variants more than absolute numbers. Only `scripts/bench.sh` counts.
+- **Before any official bench, run the exact file locally first**, and bench officially only when it passes locally and beats the current best there by more than the noise. An official evaluation of a file that fails locally is a wasted slot.
+- If it answers `LOCAL_UNAVAILABLE` (pod off, budget spent), carry on with careful review and the official bench as before.
+- Log local results in `ITERATIONS.md` too, marked `LOCAL`, so the record shows which numbers came from where.
+
+Because each official evaluation costs so much, review every change hard before you bench it: re-read the kernel against `docs/reference.py`, check edge shapes from the tests in `docs/TASK.md` (odd m, m not a multiple of the tile, the largest sizes), graph capturability, dtypes, and that compiling fits the run's 10-minute limit. One careful, well-reasoned change per evaluation beats several speculative ones. A failure message names the first failing case; `print()` output (not tensor values inside `kernel_fn`) comes back in the snapshot's `judge.log`.
 
 ## Workflow
 
@@ -58,6 +67,7 @@ Because each evaluation costs so much, review every change hard before you bench
 2. **Iteration protocol** — every labeled bench leaves a row in `ITERATIONS.md` (write `Expected:` in `## Notes` before benching when you have a real hypothesis). Per iteration:
    - Modify `solution/submission.py` (keep its first line, `# okc: problem={{OPERATOR}}`).
    - `bash scripts/lint.sh` and a careful self-review.
+   - `bash scripts/local_bench.sh --label "local-N description"` (free): iterate here until the change passes and is faster locally. Several local runs per official one is normal.
    - `bash scripts/bench.sh --label "iter-N description"` — run it in the background and keep reasoning while the judge works, but **never end your session while a bench is still running**: wait for its result first (an unfinished bench's result is lost to you, and its slot is still spent). If a bench does get cut off (a tool timeout), run the same command again on the unchanged file: it waits on the job already at the judge instead of spending another slot.
    - Read the per-shape table and `bash scripts/profile.sh --label iter-N`; log the row; `git commit -m "bench(<score>): <one-line description>"`.
 3. Stop when your evaluations are spent or you have no further well-founded idea, and write the synthesis in `ITERATIONS.md` `## Notes`.

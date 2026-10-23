@@ -21,3 +21,13 @@ min_spacing_s = 12
 [track]
 # Kernel submissions close Nov 4 at 11:59 pm PT.
 closes = "2026-11-04T23:59:00-08:00"
+
+[sidecar]
+# Local evaluations (scripts/local_bench.sh) on an H200 SXM RunPod pod running sidecar/, a copy of the
+# judge (okc_bridge/local.py, okc_bridge/pod_guard.py). Free of okc slots; costs RunPod credit.
+enabled = true
+repo = "~/meta-muse-challenge/.claude/worktrees/agent-abba127221bf9392b"
+# The guard stops the pod for good once its counted GPU spend reaches this (the account holds $250).
+budget_usd = 225.0
+# Stop the pod after this many minutes with no local bench running or asked for.
+idle_stop_min = 60
