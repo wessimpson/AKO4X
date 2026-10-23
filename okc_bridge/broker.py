@@ -31,6 +31,7 @@ Usage:
   broker.py withdraw --problem P --job J --reason R
   broker.py wait-reset --problem P                   (blocks until a slot is free)
   broker.py inflight                                 (JSON: started jobs not finished yet)
+  broker.py best-code --problem P --out F            (the fastest passing file of P, for composition)
 
 A file $AKO_OKC_STATE/STOP stops new official evaluations (STOPPED); see stop_at.py.
 """
@@ -370,6 +371,13 @@ def best(problem: str) -> dict:
     return out
 
 
+def best_overall(problem: str) -> dict | None:
+    """The fastest passing, unflagged, unwithdrawn file of either kind."""
+    b = best(problem)
+    rows = [r for r in (b["check"], b["run"]) if r]
+    return max(rows, key=lambda r: r["speedup"] or 0, default=None)
+
+
 def cmd_promote_best(a, cfg) -> dict:
     """Spend the next slot on the best checked file, if the slot is a scored run and that file
     beats the best scored run and was never scored itself."""
@@ -513,6 +521,9 @@ def main():
     w.add_argument("--job", required=True)
     w.add_argument("--reason", required=True)
     sub.add_parser("inflight")
+    bc = sub.add_parser("best-code")
+    bc.add_argument("--problem", required=True)
+    bc.add_argument("--out", required=True, help="write the file here")
     wr = sub.add_parser("wait-reset")
     wr.add_argument("--problem", required=True)
     a = p.parse_args()
@@ -563,6 +574,12 @@ def main():
         append_eval(a.problem, {"event": "withdrawn", "ts": time.time(), "utc_day": utc_day(),
                                 "problem": a.problem, "job": a.job, "reason": a.reason})
         print(msg)
+    elif a.cmd == "best-code":
+        row = best_overall(a.problem)
+        if not row:
+            sys.exit(f"no passing, unflagged result for {a.problem} yet")
+        Path(a.out).write_text(Path(row["code_path"]).read_text())
+        print(json.dumps({k: row.get(k) for k in ("job", "kind", "speedup", "ci", "loads", "label", "child")}))
     elif a.cmd == "inflight":
         print(json.dumps(inflight(), indent=1))
     elif a.cmd == "wait-reset":

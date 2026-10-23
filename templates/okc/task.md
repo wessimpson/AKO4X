@@ -17,6 +17,7 @@ Read the current `solution/submission.py`, find where its time goes, and make re
 - `docs/rules.md` — the competition's full kernel rules.
 
 {{PRIOR_LESSONS_BLOCK}}
+{{COMPONENTS_BLOCK}}
 ## Target GPU
 
 {{GPU_NAME}} — NVIDIA H200 SXM: Hopper, sm_90a, 132 SMs, 141 GB HBM3e at 4.8 TB/s, 50 MB L2, 228 KB shared memory per SM, wgmma + TMA + thread-block clusters, FP8 (E4M3/E5M2) tensor cores, no FP4 tensor cores. The judge runs in the `lmsysorg/sglang:dev-muse-spark-open` image: PyTorch, Triton, FlashInfer, DeepGEMM, TileLang, CuTe DSL and CUTLASS are importable, nothing else is installed, and there is no network. CUDA C++ compiles inside the file with `torch.utils.cpp_extension.load_inline`.

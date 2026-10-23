@@ -391,7 +391,7 @@ def render_template(task_text, placeholders):
     Inline placeholders are substituted within lines.
     """
     block_keys = {
-        "{{PRIOR_LESSONS_BLOCK}}",
+        "{{PRIOR_LESSONS_BLOCK}}", "{{COMPONENTS_BLOCK}}",
     }
     inline_keys = [
         "{{OPERATOR}}", "{{GPU_NAME}}", "{{ROUND_CAP}}",
@@ -793,6 +793,38 @@ OKC_DENY = [
 ]
 
 
+# The layer problems contain the others: the decode layer is the projections
+# (bf16_proj's shapes) + attention_decode + router + moe_w4a16 + norms; the
+# prefill layer runs the same pieces at prefill shapes. Their rounds start from
+# the current best component kernels.
+OKC_COMPONENTS = {
+    "muse_decode_layer": ("muse_bf16_proj", "muse_attention_decode", "muse_moe_w4a16"),
+    "muse_prefill_layer": ("muse_moe_w4a16", "muse_bf16_proj", "muse_attention_decode"),
+}
+
+
+def okc_install_components(child_dir, operator):
+    """Copy each component problem's fastest officially passing file (from the
+    broker's shared store, so it spans every campaign) into docs/components/.
+    Returns lines describing what was copied."""
+    import subprocess
+    lines = []
+    for comp in OKC_COMPONENTS.get(operator, ()):
+        dst = child_dir / "docs" / "components" / f"{comp}.py"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        p = subprocess.run([sys.executable, str(PARENT_DIR / "okc_bridge" / "broker.py"), "best-code",
+                            "--problem", comp, "--out", str(dst)], capture_output=True, text=True)
+        if p.returncode != 0:
+            lines.append(f"- `{comp}`: no passing kernel yet")
+            continue
+        meta = json.loads(p.stdout)
+        (dst.with_suffix(".json")).write_text(json.dumps(meta, indent=1) + "\n")
+        loads = ", ".join(f"{k} {v:.2f}x" for k, v in (meta.get("loads") or {}).items())
+        lines.append(f"- `docs/components/{comp}.py` — {meta['speedup']:.3f}x on `{comp}` "
+                     f"(job {meta['job']}; loads: {loads})")
+    return lines
+
+
 def okc_round_cap():
     sys.path.insert(0, str(PARENT_DIR / "okc_bridge"))
     import broker  # the broker's own config lookup, so the cap a sub is told is the one it gets
@@ -981,7 +1013,26 @@ def main_okc(args):
     populate_child_okc(child_dir, operator=operator, problem_dir=problem_dir,
                        kernel_path=args.kernel, agent_config=agent_config,
                        prior_lessons_dir=prior_lessons_dir)
+    comp_lines = okc_install_components(child_dir, operator)
+    components_block = (
+        "### Component kernels from the other problems\n\n"
+        "This problem contains the others: the projections are `muse_bf16_proj`'s shapes, attention "
+        "is `muse_attention_decode`'s kernel, and the routed experts are `muse_moe_w4a16`'s "
+        "(the prefill layer runs the same pieces at prefill shapes, where the experts are one large "
+        "grouped NVFP4 GEMM). Other runs are optimizing each of those on its own. Their fastest "
+        "officially passing submissions, as of this run's start:\n\n"
+        + "\n".join(comp_lines) + "\n\n"
+        "**Start by composing**: wherever a component beats what this layer currently runs for that "
+        "piece *at this problem's shapes* (compare its per-load results and `docs/TASK.md`'s shapes), "
+        "lift its kernels into `solution/submission.py` (everything must stay in one file; adapt the "
+        "interfaces, keep its correctness handling). Then spend your effort on what only the whole "
+        "layer has: fusing the norms, residuals, casts, gating and routing glue into the big kernels' "
+        "prologues and epilogues, and cutting the launch count. Each component file was judged on its "
+        "own problem only — re-check it against this problem's `docs/reference.py` before relying "
+        "on it, and give the components the same rules scrutiny as your own code.\n\n"
+    ) if comp_lines else ""
     placeholders = {
+        "{{COMPONENTS_BLOCK}}": components_block,
         "{{OPERATOR}}": operator,
         "{{GPU_NAME}}": "H200",
         "{{ROUND_CAP}}": str(okc_round_cap()),
