@@ -110,6 +110,24 @@ def ssh_ok(addr: str) -> bool:
     return r.returncode == 0 and "H200" in r.stdout
 
 
+# SSH sessions don't inherit the container's environment, so the image's Python (/opt/sglang/bin, with
+# torch) isn't on PATH. Save PID 1's environment and source it first thing in .bashrc, which bash reads
+# for ssh commands too (before Ubuntu's non-interactive early return). /root resets on a restart: rerun.
+ENV_FIX = (r"""tr '\0' '\n' < /proc/1/environ | grep -E '^(PATH|LD_LIBRARY_PATH|CUDA_HOME|SIDECAR_[A-Z_]+)=' """
+           r"""| sed 's/^/export /; s/=\(.*\)$/="\1"/' > /root/.sidecar_env && """
+           r"""echo 'export SIDECAR_LOCK_DIR=/workspace/.sidecar-locks' >> /root/.sidecar_env && """
+           r"""(grep -q sidecar_env /root/.bashrc || sed -i '1i . /root/.sidecar_env' /root/.bashrc)""")
+
+
+def fix_env(addr: str) -> bool:
+    host, *rest = addr.split()
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", *rest, host, ENV_FIX + " && . /root/.sidecar_env && python3 -c 'import torch'"],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        log(f"environment fix failed: {r.stderr[-500:]}")
+    return r.returncode == 0
+
+
 def sync_repo(cfg, addr: str) -> bool:
     r = subprocess.run(["sh", "sidecar/runpod/sync.sh", "push"], cwd=local.scfg(cfg)["repo"],
                        env=dict(os.environ, SIDECAR_SSH=addr), capture_output=True, text=True, timeout=900)
@@ -137,7 +155,7 @@ def bring_up(cfg, pod) -> bool:
     while time.time() < deadline:
         p = get_pod(pod, st["id"])
         addr = pod.ssh_string(p) if p else None
-        if addr and ssh_ok(addr):
+        if addr and ssh_ok(addr) and fix_env(addr):
             if not st.get("synced") or st.get("synced_addr") != addr:
                 if not sync_repo(cfg, addr):
                     return False
