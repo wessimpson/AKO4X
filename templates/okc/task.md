@@ -57,7 +57,7 @@ Because each evaluation costs so much, review every change hard before you bench
 2. **Iteration protocol** — every labeled bench leaves a row in `ITERATIONS.md` (write `Expected:` in `## Notes` before benching when you have a real hypothesis). Per iteration:
    - Modify `solution/submission.py` (keep its first line, `# okc: problem={{OPERATOR}}`).
    - `bash scripts/lint.sh` and a careful self-review.
-   - `bash scripts/bench.sh --label "iter-N description"` — run it in the background and keep reasoning while the judge works.
+   - `bash scripts/bench.sh --label "iter-N description"` — run it in the background and keep reasoning while the judge works, but **never end your session while a bench is still running**: wait for its result first (an unfinished bench's result is lost to you, and its slot is still spent).
    - Read the per-shape table and `bash scripts/profile.sh --label iter-N`; log the row; `git commit -m "bench(<score>): <one-line description>"`.
 3. Stop when your evaluations are spent or you have no further well-founded idea, and write the synthesis in `ITERATIONS.md` `## Notes`.
 
