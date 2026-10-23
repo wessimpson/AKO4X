@@ -1,0 +1,23 @@
+# okc broker settings. Parent-side: a child env never sees this file, so a sub can't raise its own caps.
+
+[schedule]
+# Official evaluations follow check, check, run, check, check, run, ... per problem per UTC day:
+# the next one is a scored run once today's checks reach checks_per_run x (scored runs + 1).
+# 2 gives 20 checks + 10 runs = the full 30 a day.
+checks_per_run = 2
+# Never spend the last N of each kind (keep some for manual work). 0 = use everything.
+reserve_checks = 0
+reserve_runs = 0
+
+[round]
+# Official evaluations one child env (one round) may spend. 6 = two check/check/run cycles,
+# so a problem gets ~5 rounds a day and the master steers between them.
+max_evals = 6
+
+[rate]
+# okc allows 6 submissions a minute per token and 10 per account; keep well under.
+min_spacing_s = 12
+
+[track]
+# Kernel submissions close Nov 4 at 11:59 pm PT.
+closes = "2026-11-04T23:59:00-08:00"

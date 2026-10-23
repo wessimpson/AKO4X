@@ -171,12 +171,15 @@ def _run(cmd, **kw):
     return result.stdout.strip()
 
 
-def preflight():
-    """Verify we're on a clean main. Returns base sha (short) for commit msg."""
+def preflight(base="main"):
+    """Verify we're on a clean `base` (default main). Returns base sha (short) for commit msg.
+
+    A detached HEAD at `base`'s commit also passes: per-campaign git worktrees
+    (`git worktree add --detach <dir> <base>`) can't all check out the branch."""
     branch = _run(["git", "branch", "--show-current"])
-    if branch != "main":
+    if branch != base and not (branch == "" and _run(["git", "rev-parse", "HEAD"]) == _run(["git", "rev-parse", base])):
         sys.exit(
-            f"Error: campaign_start.py must run from main (currently on "
+            f"Error: campaign_start.py must run from {base} (currently on "
             f"{branch!r}). Switch to main and ensure the campaign starts "
             f"from a known base."
         )
@@ -186,6 +189,13 @@ def preflight():
             f"Error: working tree is not clean. Commit or stash first:\n{dirty}"
         )
     return _run(["git", "rev-parse", "--short", "HEAD"])
+
+
+def okc_preflight(operator):
+    """okc backend: the operator must be a problem under okc_problems/."""
+    if not (REPO_ROOT / "okc_problems" / operator / "submission.py").is_file():
+        sys.exit(f"Error: {operator!r} is not an okc problem (no okc_problems/{operator}/submission.py); "
+                 f"campaign_start refused to create the branch — no git state was changed.")
 
 
 def dataset_preflight(operator):
@@ -316,7 +326,7 @@ def main():
     parser.add_argument("--gpu", default="b200",
                         help="GPU slug for master CC's spawn calls "
                              "(default: b200).")
-    parser.add_argument("--backend", default="modal", choices=["local", "modal"],
+    parser.add_argument("--backend", default="modal", choices=["local", "modal", "okc"],
                         help="Backend for master CC's spawn calls "
                              "(default: modal).")
     parser.add_argument("--mode", type=int, default=2, choices=[2, 3],
@@ -324,11 +334,16 @@ def main():
                              "commit: 2 = no harness modification (default); "
                              "3 = harness co-evolution. Declare the SAME mode in "
                              "the master CC prompt so the locked baseline matches.")
+    parser.add_argument("--base", default="main",
+                        help="Branch the campaign starts from (default: main; the okc port lives on okc).")
     args = parser.parse_args()
 
     validate_operator(args.operator)
-    base_sha = preflight()
-    dataset_preflight(args.operator)
+    base_sha = preflight(args.base)
+    if args.backend == "okc":
+        okc_preflight(args.operator)
+    else:
+        dataset_preflight(args.operator)
     family = derive_family(args.operator)
     branch = make_branch_name(args.operator)
 
@@ -341,7 +356,11 @@ def main():
     readme = REPO_ROOT / "README.md"
     if not master_md.is_file():
         sys.exit(f"Error: {master_md} not found. Cannot swap into CLAUDE.md.")
-    claude_md.write_text(master_md.read_text())
+    protocol = master_md.read_text()
+    if args.backend == "okc":
+        # okc campaigns: MASTER.md + the okc overrides (MASTER-OKC.md wins where they conflict).
+        protocol = protocol.rstrip() + "\n" + (REPO_ROOT / "master" / "MASTER-OKC.md").read_text()
+    claude_md.write_text(protocol)
     readme.write_text(render_readme_stub(
         args.operator, family, args.backend, args.gpu, args.mode, branch,
     ))
@@ -368,7 +387,7 @@ def main():
     print(f"  Mode:                 {args.mode} ({mode_desc})")
     print(f"  Started from:         main @ {base_sha}")
     print()
-    if not fib_dataset:
+    if not fib_dataset and args.backend != "okc":
         print("WARNING: AKO_DATASET_PATH is not set in this shell. Master CC")
         print("         will need it to spawn children. Set before starting")
         print("         your claude session, e.g.:")

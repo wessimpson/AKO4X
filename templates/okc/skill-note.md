@@ -1,0 +1,2 @@
+> **In this workspace (Open Kernel Challenge, H200):** the submission is the single file `solution/submission.py` — there is no `config.toml` `[build]`, no TVM-FFI, no `binding.py`, and `bash scripts/bench.sh` takes only `--label` (no `--first`, `--smoke`, `--ab-compare`, `--variance-check`, `--extremes`). CUDA compiles via `load_inline` (see the `okc-submission` skill). Blackwell / B200 / tcgen05 / tmem material below doesn't apply on Hopper (sm_90a). Library calls are allowed in this competition. Read the rest of this skill for kernel-writing knowledge.
+

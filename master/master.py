@@ -15,6 +15,7 @@ Functions, see MASTER.md for round-flow context:
   archive_variant(...)           — land a successful variant under reference/<family>/
   archive_failed(...)            — land a crash/timeout transcript under reference/<family>/_failed/
   append_ledger(...)             — append one line to harness-ledger.md
+  okc_*(...)                     — okc backend: budget, wait for reset, round results, promote, withdraw
 
 Master CC reads sub's proposals directly from `<child>/PROPOSALS.md` via its
 own Read tool — there is no master.py parser for that file. The phase-2
@@ -198,6 +199,16 @@ def _sha256_file(path: Path) -> str | None:
     if not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _kernel_file(child_dir: Path) -> Path:
+    """The child's evaluated kernel file: solution/submission.py for the okc
+    backend (one-file submissions; its config.toml has an [okc] table),
+    solution/kernel.py otherwise."""
+    config = child_dir / "config.toml"
+    if config.is_file() and re.search(r"^\[okc\]\s*$", config.read_text(), re.MULTILINE):
+        return child_dir / "solution" / "submission.py"
+    return child_dir / "solution" / "kernel.py"
 
 
 def _git_diff_head(cwd: Path, *, timeout: int = 120) -> str | None:
@@ -518,7 +529,7 @@ def spawn_child(
     # driven, not "does kernel.py exist" (it always does).
     ako = child_dir / ".ako"
     ako.mkdir(exist_ok=True)
-    seed_hash = _sha256_file(child_dir / "solution" / "kernel.py")
+    seed_hash = _sha256_file(_kernel_file(child_dir))
     if seed_hash is not None:
         (ako / "seed-kernel.sha256").write_text(seed_hash + "\n")
 
@@ -575,7 +586,7 @@ def run_sub_phase1(child_dir: Path, prompt: str, *, timeout: int = 18000) -> Sub
 
     diff_text = _git_diff_head(child_dir) or ""
 
-    final_kernel = child_dir / "solution" / "kernel.py"
+    final_kernel = _kernel_file(child_dir)
     final_exists = final_kernel.is_file()
     seed_hash_file = ako / "seed-kernel.sha256"
     seed_hash = seed_hash_file.read_text().strip() if seed_hash_file.is_file() else None
@@ -858,3 +869,76 @@ def append_ledger(entry: str, *, ledger_path: Path | None = None) -> None:
         e = e[2:].lstrip()
     with p.open("a") as f:
         f.write(f"- {e}\n")
+
+
+# ── 8. okc backend (Open Kernel Challenge) ──────────────────────────────
+#
+# Thin wrappers over okc_bridge/broker.py, the only path to the official judge.
+# The broker owns the daily budget, the check/check/run schedule, the rules
+# lint and the result store; these just shell out and parse its JSON. Master CC
+# never runs `okc` itself.
+
+OKC_BROKER = ROOT / "okc_bridge" / "broker.py"
+
+
+def _broker(*args: str, timeout: int = 600) -> dict | str:
+    import sys
+    p = subprocess.run([sys.executable, str(OKC_BROKER), *args],
+                       capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"broker {' '.join(args)} failed ({p.returncode}): "
+                           f"{(p.stderr or p.stdout).strip()[-2000:]}")
+    try:
+        return json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return p.stdout.strip()
+
+
+def okc_budget(problem: str) -> dict:
+    """Today's official slots for `problem`: checks/runs left and used, the
+    next slot's kind ("check" / "run" / None when none are left today, or the
+    track is closed), seconds until the 00:00 UTC reset, the best check and
+    best scored run so far, and `unaccounted_today` (official runs today the
+    broker didn't start — someone spent budget outside the campaign)."""
+    return _broker("status", "--problem", problem, "--json")
+
+
+def okc_wait_for_budget(problem: str) -> dict:
+    """Block until `problem` has an official slot again (the 00:00 UTC reset)
+    or the kernel track closes. Can take up to a day: run it in the background.
+    Returns {"status": "READY" | "TRACK_CLOSED", ...}."""
+    return _broker("wait-reset", "--problem", problem, timeout=60 * 60 * 30)
+
+
+def okc_round_results(problem: str, child_dir: Path) -> dict:
+    """Every official evaluation one round (child env) spent, from the broker's
+    store — the authoritative record, independent of what the sub wrote.
+    {"finished": [row, ...], "gates": [row, ...]}; a finished row carries
+    label, kind ("check" / "run"), job, status, passed, speedup, ci, loads,
+    shapes, flags, code_path (the exact file judged), profile_path, log_path.
+    Gate rows are evaluations that spent nothing (LINT_REJECTED, CACHED,
+    ROUND_CAP, BUDGET_EXHAUSTED, ERROR)."""
+    return _broker("results", "--problem", problem, "--child", Path(child_dir).name)
+
+
+def okc_best(problem: str) -> dict:
+    """Best passing, unflagged, unwithdrawn result of each kind: {"check": row|None, "run": row|None}."""
+    return _broker("best", "--problem", problem)
+
+
+def okc_promote_best(problem: str, *, dry_run: bool = False) -> dict:
+    """If the next official slot is a scored run, the best check beats the best
+    scored run, and that exact file was never scored, spend the slot on it
+    (the leaderboard row is the best scored run). Otherwise a NOOP with the
+    reason. Blocks while the judge runs (minutes): run it in the background."""
+    args = ["promote-best", "--problem", problem] + (["--dry-run"] if dry_run else [])
+    return _broker(*args, timeout=60 * 90)
+
+
+def okc_withdraw(problem: str, job: str, reason: str) -> str:
+    """Take a scored run off its board for good (`okc withdraw`). The rules
+    require it for a run that games the judge or breaks the rules; the day's
+    run isn't given back. Logged in the broker's store."""
+    _validate_safe_name(job, kind="job id")
+    return _broker("withdraw", "--problem", problem, "--job", job, "--reason", reason)
+

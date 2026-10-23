@@ -46,7 +46,9 @@ def parse_args():
                         help="Closed-loop campaign family: authoritative "
                              "reference/<family>/ selector. Overrides "
                              "operator-prefix archive discovery.")
-    parser.add_argument("--backend", default="local", choices=["local", "modal"])
+    parser.add_argument("--backend", default="local", choices=["local", "modal", "okc"],
+                        help="okc: the Open Kernel Challenge judge via okc_bridge/ "
+                             "(operators are okc_problems/<problem>/; no dataset)")
     parser.add_argument("--gpu", default="")
     parser.add_argument("--agent", default="claude")
     parser.add_argument("--kernel", default="")
@@ -392,7 +394,7 @@ def render_template(task_text, placeholders):
         "{{PRIOR_LESSONS_BLOCK}}",
     }
     inline_keys = [
-        "{{OPERATOR}}", "{{GPU_NAME}}",
+        "{{OPERATOR}}", "{{GPU_NAME}}", "{{ROUND_CAP}}",
     ]
 
     lines = []
@@ -772,8 +774,242 @@ def init_git(child_dir, operator, backend):
         print(f"Warning: git initialization failed ({e}), continuing without git.", file=sys.stderr)
 
 
+# ── okc backend (Open Kernel Challenge) ─────────────────────────────────
+#
+# No dataset and no local GPU: an operator is a problem under okc_problems/
+# (`okc init` output), the kernel is one file (solution/submission.py), and
+# every bench goes through the parent-side okc_bridge/broker.py, which owns
+# the daily budget, the check/check/run schedule and the rules lint. The
+# child gets the okc runner + free tools, the okc skill overrides, and a
+# PreToolUse guard that blocks direct okc / API use.
+
+OKC_PROBLEMS_DIR = PARENT_DIR / "okc_problems"
+OKC_TEMPLATES = PARENT_DIR / "templates" / "okc"
+OKC_SKILL_NOTE_TARGETS = ("cuda", "cpp", "triton", "cute-dsl", "tilelang")
+OKC_DENY = [
+    "Bash(okc:*)", "Bash(okc *)", "Bash(~/.okc/bin/okc:*)",
+    "Read(~/.okc/**)", "Read(~/.config/okc/**)", "Read(~/Library/Application Support/okc/**)",
+    "WebFetch(domain:openkernelchallenge.dev)",
+]
+
+
+def okc_round_cap():
+    sys.path.insert(0, str(PARENT_DIR / "okc_bridge"))
+    import broker  # the broker's own config lookup, so the cap a sub is told is the one it gets
+    return broker.load_config()["round"]["max_evals"]
+
+
+def okc_list_problems():
+    print("Available okc problems:")
+    for d in sorted(OKC_PROBLEMS_DIR.iterdir()):
+        if (d / "submission.py").is_file():
+            print(f"  {d.name}")
+    sys.exit(0)
+
+
+def okc_normalize_header(code, operator):
+    """The okc header must be line 1. An archived variant carries its lessons
+    header above the code, so move the header line back to the top."""
+    header = f"# okc: problem={operator}"
+    lines = [ln for ln in code.splitlines() if ln.strip() != header]
+    return header + "\n" + "\n".join(lines).lstrip("\n") + "\n"
+
+
+def okc_install_skills(child_dir):
+    skills_dst = child_dir / ".claude" / "skills"
+    shutil.copytree(PARENT_DIR / "templates" / "skills", skills_dst)
+    for override in sorted((OKC_TEMPLATES / "skills").iterdir()):
+        if override.is_dir():
+            if (skills_dst / override.name).exists():
+                shutil.rmtree(skills_dst / override.name)
+            shutil.copytree(override, skills_dst / override.name)
+    note = (OKC_TEMPLATES / "skill-note.md").read_text()
+    for name in OKC_SKILL_NOTE_TARGETS:
+        skill_md = skills_dst / name / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        text = skill_md.read_text()
+        # Insert after the frontmatter so discovery (name + description) is unchanged.
+        m = re.match(r"(---\n.*?\n---\n)(.*)", text, re.S)
+        if m:
+            skill_md.write_text(m.group(1) + "\n" + note + m.group(2).lstrip("\n"))
+
+
+def populate_child_okc(child_dir, *, operator, problem_dir, kernel_path, agent_config,
+                       prior_lessons_dir):
+    for subdir in [".claude", "docs", "scripts", "solution", ".ako"]:
+        (child_dir / subdir).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PARENT_DIR / "templates" / "gitignore", child_dir / ".gitignore")
+
+    # docs/: the problem as okc init wrote it (minus AGENTS.md, which tells an agent
+    # to run okc directly) + problem.json + the competition's kernel rules.
+    task_note = (
+        "> **In this workspace:** don't run `okc` — `bash scripts/bench.sh --label ...` is the only "
+        "way to the judge (it applies the daily budget and the check/check/run schedule). "
+        "The judge's profile lands in `trajectory/<snapshot>/profile.txt` "
+        "(`bash scripts/profile.sh`), its log in `judge.log`.\n\n"
+    )
+    for name in ("TASK.md", "reference.py", "checks.py", "baseline.py", "nvfp4.py", "problem.json"):
+        src = problem_dir / name
+        if src.is_file():
+            text = src.read_text()
+            (child_dir / "docs" / name).write_text(task_note + text if name == "TASK.md" else text)
+    shutil.copy2(OKC_PROBLEMS_DIR / "RULES.md", child_dir / "docs" / "rules.md")
+
+    # solution/submission.py: the parent variant, or the problem's starter.
+    if kernel_path:
+        kp = Path(kernel_path)
+        if kp.is_dir():
+            kp = next((kp / n for n in ("kernel.py", "submission.py") if (kp / n).is_file()), None)
+            if kp is None:
+                sys.exit(f"Error: no kernel.py or submission.py in {kernel_path}")
+        code = kp.read_text()
+    else:
+        code = (problem_dir / "submission.py").read_text()
+    (child_dir / "solution" / "submission.py").write_text(okc_normalize_header(code, operator))
+
+    shutil.copy2(OKC_TEMPLATES / "iterations.md", child_dir / "ITERATIONS.md")
+
+    broker = (PARENT_DIR / "okc_bridge" / "broker.py").resolve()
+    config_toml = (
+        f'[solution]\n'
+        f'name = "{operator}-solution"\n'
+        f'definition = "{operator}"\n'
+        f'author = "user"\n'
+        f'\n'
+        f'[build]\n'
+        f'gpu = "h200"\n'
+        f'language = "python"\n'
+        f'entry_point = "submission.py::kernel_fn"\n'
+        f'\n'
+        f'[okc]\n'
+        f'problem = "{operator}"\n'
+        f'broker = "{broker}"\n'
+        f'python = "{sys.executable}"\n'
+        f'\n'
+        f'[benchmark]\n'
+        f'backend = "okc"\n'
+        f'\n'
+        f'[advisory]\n'
+        f'frequency = 3\n'
+        f'enabled = true\n'
+    )
+    (child_dir / "config.toml").write_text(config_toml)
+
+    if prior_lessons_dir:
+        copied = copy_prior_lessons(prior_lessons_dir, child_dir)
+        if copied:
+            print(f"Copied prior-session notes from reference/{prior_lessons_dir.name}/ "
+                  f"({len(copied)} files: {', '.join(copied)})")
+
+    py = sys.executable
+    for name in ("run_okc.py", "profile_okc.py"):
+        shutil.copy2(PARENT_DIR / "scripts" / "okc" / name, child_dir / "scripts" / name)
+    prelude = '#!/bin/bash\ncd "$(dirname "$0")/.." || exit 1\n'
+    scripts = {
+        "bench.sh": prelude + f'"{py}" scripts/run_okc.py "$@"\n',
+        "profile.sh": prelude + f'"{py}" scripts/profile_okc.py "$@"\n',
+        "lint.sh": prelude + f'"{py}" "{broker}" lint --problem {operator} --file solution/submission.py\n',
+        "budget.sh": prelude + f'"{py}" "{broker}" status --problem {operator} --child "$(basename "$PWD")"\n',
+    }
+    for name, content in scripts.items():
+        p = child_dir / "scripts" / name
+        p.write_text(content)
+        p.chmod(0o755)
+
+    hooks_dst = child_dir / ".claude" / "hooks"
+    shutil.copytree(PARENT_DIR / "templates" / "agent" / "hooks", hooks_dst)
+    shutil.copy2(OKC_TEMPLATES / "hooks" / "okc-guard.sh", hooks_dst / "okc-guard.sh")
+    for hook_file in hooks_dst.iterdir():
+        hook_file.chmod(0o755)
+    shutil.copytree(OKC_TEMPLATES / "commands", child_dir / ".claude" / "commands")
+    okc_install_skills(child_dir)
+
+    permissions = dict(agent_config["permissions"])
+    permissions["deny"] = list(permissions.get("deny", [])) + OKC_DENY
+    settings = {
+        "permissions": permissions,
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": ".claude/hooks/okc-guard.sh"}],
+            }],
+            "PostToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "if": "Bash(*bench.sh*)",
+                    "command": ".claude/hooks/advisory-review.sh",
+                }],
+            }],
+        },
+    }
+    (child_dir / ".claude" / "settings.local.json").write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def main_okc(args):
+    if not args.operator:
+        okc_list_problems()
+    operator = args.operator
+    problem_dir = OKC_PROBLEMS_DIR / operator
+    if not (problem_dir / "submission.py").is_file():
+        sys.exit(f"Error: okc problem {operator!r} not found under {OKC_PROBLEMS_DIR}/. "
+                 f"Run without --operator to list them.")
+    if args.kernel:
+        validate_kernel_path(args.kernel)
+    agent_config, task_filename = load_agent_config(args.agent)
+
+    prior_lessons_dir = discover_prior_lessons(operator, args.family)
+    if prior_lessons_dir:
+        print(f"Prior-session archive: {prior_lessons_dir}")
+    has_variants = bool(prior_lessons_dir and (prior_lessons_dir / "variants").is_dir()
+                        and any((prior_lessons_dir / "variants").iterdir()))
+    prior_lessons_block = (
+        f"### Prior-session kernels ({prior_lessons_dir.name})\n\n"
+        f"`docs/prior/` holds **working submissions** from earlier runs on this problem, each "
+        f"judged officially. Read `docs/prior/README.md` first — it names the current anchor "
+        f"variant and its fallbacks. `docs/prior/variants/<name>/kernel.py` is a complete "
+        f"submission file whose header comment records its architecture, lessons and "
+        f"dead-ends; `result.json` beside it is its official result (per-shape table "
+        f"included).\n\n"
+    ) if has_variants else ""
+
+    child_dir = BASE_DIR / make_child_name(args.label)
+    if child_dir.exists():
+        sys.exit(f"Error: Directory already exists: {child_dir}\n"
+                 f"Choose a different --name or remove the existing directory.")
+    populate_child_okc(child_dir, operator=operator, problem_dir=problem_dir,
+                       kernel_path=args.kernel, agent_config=agent_config,
+                       prior_lessons_dir=prior_lessons_dir)
+    placeholders = {
+        "{{OPERATOR}}": operator,
+        "{{GPU_NAME}}": "H200",
+        "{{ROUND_CAP}}": str(okc_round_cap()),
+        "{{PRIOR_LESSONS_BLOCK}}": prior_lessons_block,
+    }
+    task_text = (OKC_TEMPLATES / "task.md").read_text()
+    (child_dir / task_filename).write_text(render_template(task_text, placeholders))
+    init_git(child_dir, operator, "okc")
+
+    print()
+    print("===== Child environment created =====")
+    print(f"  Path:     {child_dir}")
+    print(f"  Operator: {operator}")
+    print(f"  Backend:  okc")
+    print(f"  GPU:      H200 (the okc judge)")
+    if args.kernel:
+        print(f"  Kernel:   {args.kernel}")
+    print()
+    print("Next steps:")
+    print(f"  cd {child_dir}")
+    print(f"  claude")
+    print("=======================================")
+
+
 def main():
     args = parse_args()
+    if args.backend == "okc":
+        return main_okc(args)
 
     # Resolve dataset + list operators (GPU not needed for listing)
     dataset_path = resolve_dataset(args.dataset)

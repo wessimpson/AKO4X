@@ -176,6 +176,7 @@ Every kernel above — together with its full optimization trajectory (per-round
 | [Installation](docs/installation.md) | Install + first spawn + working with the agent |
 | [Closed-loop campaigns](docs/closed-loop.md) | Autonomous multi-round optimization (Mode 2 / Mode 3) + family-archive lifecycle |
 | [Porting to another benchmark](docs/porting.md) | Swap FlashInfer-Bench for a different benchmark — the adapter seam + swap checklist |
+| [Open Kernel Challenge (okc backend)](docs/okc.md) | This fork's port: closed-loop campaigns on the Muse Spark Open Kernel Challenge judge, within its rules and daily caps |
 | [Troubleshooting](docs/troubleshooting.md) | flashinfer-bench-specific issues (CUPTI driver mismatch, version pinning, TVM FFI linking) |
 
 **Docs philosophy.** These pages are **agent-friendly by design** —
