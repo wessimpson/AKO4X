@@ -211,6 +211,15 @@ def _kernel_file(child_dir: Path) -> Path:
     return child_dir / "solution" / "kernel.py"
 
 
+def _child_settings_args(child_dir: Path) -> list[str]:
+    """`--settings <child>/.claude/settings.local.json`. A fresh child dir is an
+    untrusted workspace, and `claude --print` ignores an untrusted workspace's
+    permission allow-list (every write and most commands get denied); settings
+    passed on the command line still apply, hooks included."""
+    settings = child_dir / ".claude" / "settings.local.json"
+    return ["--settings", str(settings)] if settings.is_file() else []
+
+
 def _git_diff_head(cwd: Path, *, timeout: int = 120) -> str | None:
     """`git diff HEAD` text, or None if git failed or timed out. Diagnostic
     only — a slow/broken git must never hang or crash a round."""
@@ -569,6 +578,7 @@ def run_sub_phase1(child_dir: Path, prompt: str, *, timeout: int = 18000) -> Sub
         "claude", "--print", "--verbose",
         "--output-format", "stream-json",
         "--session-id", session_id,
+        *_child_settings_args(child_dir),
         prompt,
     ]
     stdout, stderr, exit_status, timed_out = _run_bounded(
@@ -655,6 +665,7 @@ def send_retrospective_prompt(
         "claude", "--resume", session_id,
         "--print", "--verbose",  # stream-json + --print requires --verbose (see run_sub_phase1)
         "--output-format", "stream-json",
+        *_child_settings_args(child_dir),
         template_text,
     ]
     stdout, stderr, exit_status, timed_out = _run_bounded(
