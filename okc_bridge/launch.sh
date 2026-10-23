@@ -31,6 +31,10 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 
 mkdir -p "$STATE" "$WT_ROOT"
+if [ -f "$STATE/STOP" ]; then
+    rm "$STATE/STOP"
+    echo "removed $STATE/STOP (left by stop_at.py): official evaluations are allowed again"
+fi
 [ -f "$STATE/okc.toml" ] || cp "$REPO/okc_bridge/okc.toml" "$STATE/okc.toml"
 
 for P in "$@"; do

@@ -30,6 +30,9 @@ Usage:
   broker.py promote-best --problem P [--dry-run]     (scored run of the best unscored check)
   broker.py withdraw --problem P --job J --reason R
   broker.py wait-reset --problem P                   (blocks until a slot is free)
+  broker.py inflight                                 (JSON: started jobs not finished yet)
+
+A file $AKO_OKC_STATE/STOP stops new official evaluations (STOPPED); see stop_at.py.
 """
 
 from __future__ import annotations
@@ -94,6 +97,11 @@ def seconds_until_reset() -> float:
     now = dt.datetime.now(dt.timezone.utc)
     nxt = (now + dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return (nxt - now).total_seconds()
+
+
+def stopped() -> bool:
+    """$AKO_OKC_STATE/STOP exists: start no new official evaluations (see stop_at.py)."""
+    return (state_root() / "STOP").exists()
 
 
 def track_closed(cfg: dict) -> bool:
@@ -325,6 +333,10 @@ def cmd_eval(a, cfg) -> dict:
         return gate_row(a.problem, a.child, a.label, sha, "ROUND_CAP",
                         f"this run's {cap} official evaluations are spent; stop and write your synthesis")
     with global_lock():
+        if stopped():
+            return gate_row(a.problem, a.child, a.label, sha, "STOPPED",
+                            "the campaign has been stopped; no new official evaluations. "
+                            "Write your synthesis and end the session")
         b = budget(a.problem, cfg)
         kind = b["next_kind"]
         if kind is None:
@@ -380,6 +392,8 @@ def cmd_promote_best(a, cfg) -> dict:
     if track_closed(cfg):
         return {"status": "TRACK_CLOSED", "message": "the kernel track is closed"}
     with global_lock():
+        if stopped():
+            return {"status": "STOPPED", "message": "the campaign has been stopped"}
         bud = budget(a.problem, cfg)
         if bud["next_kind"] != "run":
             return {"status": "NOOP", "message": f"next slot is {bud['next_kind']}, not a run", "budget": bud}
@@ -394,6 +408,8 @@ def cmd_wait_reset(a, cfg) -> dict:
     while True:
         if track_closed(cfg):
             return {"status": "TRACK_CLOSED"}
+        if stopped():
+            return {"status": "STOPPED"}
         try:
             b = budget(a.problem, cfg)
             if b["next_kind"]:
@@ -403,6 +419,16 @@ def cmd_wait_reset(a, cfg) -> dict:
             print(f"wait-reset: {e}", file=sys.stderr)
             nap = 300
         time.sleep(nap)
+
+
+def inflight() -> list[dict]:
+    """Jobs started on any problem that have no finished row yet."""
+    out = []
+    for problem in PROBLEMS:
+        evals = read_evals(problem)
+        done = {e["job"] for e in evals if e.get("event") == "finished"}
+        out += [e for e in evals if e.get("event") == "started" and e["job"] not in done]
+    return out
 
 
 def unaccounted(problem: str, b: dict) -> int:
@@ -486,11 +512,12 @@ def main():
     w.add_argument("--problem", required=True)
     w.add_argument("--job", required=True)
     w.add_argument("--reason", required=True)
+    sub.add_parser("inflight")
     wr = sub.add_parser("wait-reset")
     wr.add_argument("--problem", required=True)
     a = p.parse_args()
     cfg = load_config()
-    if hasattr(a, "problem"):
+    if getattr(a, "problem", None):
         pdir(a.problem)
 
     if a.cmd == "eval":
@@ -536,6 +563,8 @@ def main():
         append_eval(a.problem, {"event": "withdrawn", "ts": time.time(), "utc_day": utc_day(),
                                 "problem": a.problem, "job": a.job, "reason": a.reason})
         print(msg)
+    elif a.cmd == "inflight":
+        print(json.dumps(inflight(), indent=1))
     elif a.cmd == "wait-reset":
         print(json.dumps(cmd_wait_reset(a, cfg)))
 
