@@ -199,7 +199,9 @@ def loop(cfg) -> None:
         st = state()
         p = get_pod(pod, st["id"]) if st.get("id") else None
         if running(p):
-            sp = add_spend(min(dt_s, 5 * 60), float(p.get("costPerHr") or 0))  # a laptop sleep isn't billed twice
+            # The pod bills in the cloud while this laptop sleeps, and nothing here can stop it then, so a pod
+            # that is running now has been running the whole gap: count all of it (a cap would undercount).
+            sp = add_spend(dt_s, float(p.get("costPerHr") or 0))
             if sp["usd"] >= s["budget_usd"]:
                 stop_pod(cfg, pod, f"spend ${sp['usd']:.2f} reached the ${s['budget_usd']} budget")
                 (local.sdir() / "disabled").write_text(f"spend ${sp['usd']:.2f} reached the ${s['budget_usd']} budget")
