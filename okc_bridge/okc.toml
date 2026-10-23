@@ -29,5 +29,7 @@ enabled = true
 repo = "~/meta-muse-challenge/.claude/worktrees/agent-abba127221bf9392b"
 # The guard stops the pod for good once its counted GPU spend reaches this (the account holds $250).
 budget_usd = 225.0
+# The authority: stop the pod for good when the RunPod account's real balance falls to this.
+min_balance_usd = 25.0
 # Stop the pod after this many minutes with no local bench running or asked for.
 idle_stop_min = 60

@@ -12,7 +12,9 @@ Local benches (local.py) ask for the pod by touching <state>/sidecar/want and re
 <state>/sidecar/ssh, which exists only while the pod is up.
 
 Every 30 s the loop:
-- counts spend: costPerHr × running time, into <state>/sidecar/spend.json;
+- every 5 minutes reads the account's real balance (GraphQL) into <state>/sidecar/balance.json, and stops the pod
+  for good when it reaches [sidecar] min_balance_usd;
+- counts spend as a fallback: costPerHr × running time, into <state>/sidecar/spend.json;
 - at [sidecar] budget_usd stops the pod for good: writes <state>/sidecar/disabled, and local benches answer
   LOCAL_UNAVAILABLE (delete the file and raise the budget to resume);
 - starts the pod when a bench asked for it, and stops it after [sidecar] idle_stop_min minutes with no
@@ -83,6 +85,24 @@ def add_spend(dt_s: float, per_hr: float) -> dict:
     s["per_hr"] = per_hr
     (local.sdir() / "spend.json").write_text(json.dumps(s))
     return s
+
+
+def balance() -> dict | None:
+    """The account's real balance and burn rate (RunPod GraphQL, read-only)."""
+    import urllib.request
+    req = urllib.request.Request("https://api.runpod.io/graphql", method="POST",
+                                 data=json.dumps({"query": "query { myself { clientBalance currentSpendPerHr } }"}).encode(),
+                                 headers={"Authorization": f"Bearer {os.environ['RUNPOD_API_KEY']}",
+                                          "Content-Type": "application/json", "User-Agent": "okc-sidecar/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            me = json.loads(r.read())["data"]["myself"]
+        out = {"balance_usd": float(me["clientBalance"]), "spend_per_hr": float(me["currentSpendPerHr"]), "ts": time.time()}
+        (local.sdir() / "balance.json").write_text(json.dumps(out))
+        return out
+    except Exception as e:  # noqa: BLE001 -- the estimate is the fallback
+        log(f"balance query failed: {e}")
+        return None
 
 
 def get_pod(pod, pid: str) -> dict | None:
@@ -187,7 +207,7 @@ def loop(cfg) -> None:
     pod = rp(cfg)
     s = local.scfg(cfg)
     log(f"pod guard up: budget ${s['budget_usd']}, idle stop {s['idle_stop_min']} min")
-    last = time.time()
+    last, last_bal = time.time(), 0.0
     while True:
         (local.sdir() / "guard_heartbeat").write_text(str(time.time()))
         time.sleep(TICK_S)
@@ -198,6 +218,14 @@ def loop(cfg) -> None:
         s = local.scfg(cfg)
         st = state()
         p = get_pod(pod, st["id"]) if st.get("id") else None
+        if now - last_bal > 300:
+            last_bal = now
+            bal = balance()
+            floor = float(s.get("min_balance_usd", 25.0))
+            if bal and bal["balance_usd"] <= floor:
+                stop_pod(cfg, pod, f"RunPod balance ${bal['balance_usd']:.2f} reached the ${floor:.0f} floor")
+                (local.sdir() / "disabled").write_text(f"RunPod balance ${bal['balance_usd']:.2f} reached the ${floor:.0f} floor")
+                continue
         if running(p):
             # The pod bills in the cloud while this laptop sleeps, and nothing here can stop it then, so a pod
             # that is running now has been running the whole gap: count all of it (a cap would undercount).

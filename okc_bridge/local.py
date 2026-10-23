@@ -44,7 +44,8 @@ def sdir() -> Path:
 def scfg(cfg: dict) -> dict:
     s = cfg.get("sidecar", {})
     return {"enabled": s.get("enabled", True), "repo": os.path.expanduser(s.get("repo", "")),
-            "budget_usd": s.get("budget_usd", 225.0), "idle_stop_min": s.get("idle_stop_min", 60)}
+            "budget_usd": s.get("budget_usd", 225.0), "idle_stop_min": s.get("idle_stop_min", 60),
+            "min_balance_usd": s.get("min_balance_usd", 25.0)}
 
 
 def local_dir(problem: str) -> Path:
