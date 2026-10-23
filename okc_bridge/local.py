@@ -140,7 +140,8 @@ def cmd_eval(a, cfg) -> dict:
         raw = run_sidecar(a.problem, src, cfg)
         if raw.get("status") == "LOCAL_UNAVAILABLE":
             return dict(base, **raw)
-        cached.write_text(json.dumps(raw))
+        if (raw.get("result") or {}).get("records"):  # never cache a refusal or a crash: they aren't the file's result
+            cached.write_text(json.dumps(raw))
         tag = {}
     row = {"event": "finished", "ts": time.time(), "problem": a.problem, "child": a.child, "label": a.label,
            "sha256": sha, **broker.summarize(raw), "kind": "local", "job": f"local-{sha[:12]}", "source": "local",
