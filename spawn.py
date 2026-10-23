@@ -746,7 +746,7 @@ def populate_child(child_dir, *, operator, op_type, gpu, backend, kernel_path,
                     "hooks": [{
                         "type": "command",
                         "if": "Bash(*bench.sh*)",
-                        "command": ".claude/hooks/advisory-review.sh",
+                        "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/advisory-review.sh",
                     }],
                 },
             ],
@@ -964,14 +964,14 @@ def populate_child_okc(child_dir, *, operator, problem_dir, kernel_path, agent_c
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Bash",
-                "hooks": [{"type": "command", "command": ".claude/hooks/okc-guard.sh"}],
+                "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/okc-guard.sh"}],
             }],
             "PostToolUse": [{
                 "matcher": "Bash",
                 "hooks": [{
                     "type": "command",
                     "if": "Bash(*bench.sh*)",
-                    "command": ".claude/hooks/advisory-review.sh",
+                    "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/advisory-review.sh",
                 }],
             }],
         },

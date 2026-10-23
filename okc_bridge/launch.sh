@@ -61,7 +61,7 @@ for P in "$@"; do
   },
   "hooks": {
     "PreToolUse": [{"matcher": "Bash",
-                    "hooks": [{"type": "command", "command": ".claude/hooks/okc-guard.sh"}]}]
+                    "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/okc-guard.sh"}]}]
   }
 }
 JSON
