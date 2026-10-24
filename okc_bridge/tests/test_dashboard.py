@@ -190,5 +190,25 @@ class Dashboard(unittest.TestCase):
         self.assertIn("m&lt;=32", self.prob(json.loads((out / "data.json").read_text()), P)["points"][0]["hover"])
 
 
+class Board(unittest.TestCase):
+    def test_rank_counts_only_other_teams_above_us(self):
+        snap = {"ts": 0, "leader": 2.0, "leader_team": "lead", "others": [2.0, 1.8, 1.5, 1.2] + [1.0] * 8}
+        r = dashboard.rank_on(snap, 1.5)
+        self.assertEqual((r["rank"], r["of"], r["top10"]), (3, 13, 1.0))
+        self.assertEqual(dashboard.rank_on(snap, 2.1)["rank"], 1)
+        self.assertIsNone(dashboard.rank_on(None, 1.0))
+
+    def test_snapshots_give_the_leader_at_each_run_time(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "leaderboard").mkdir()
+        rows = [{"ts": 100, "leader": 1.5, "leader_team": "a", "others": [1.5]},
+                {"ts": 200, "leader": 1.9, "leader_team": "b", "others": [1.9, 1.5]}]
+        (root / "leaderboard" / "muse_bf16_proj.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        snaps = dashboard.board_snapshots("muse_bf16_proj", root, fetch=False)
+        self.assertEqual([s["leader"] for s in snaps], [1.5, 1.9])
+        then = [s for s in snaps if s["ts"] <= 150]
+        self.assertEqual(then[-1]["leader"], 1.5)
+
+
 if __name__ == "__main__":
     unittest.main()

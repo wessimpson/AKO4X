@@ -180,6 +180,43 @@ def ratios(root: Path) -> dict[str, dict]:
 # ── the dashboard data ───────────────────────────────────────────────────
 
 
+BOARD_EVERY_S = 300
+TEAM = "wessimpson"
+
+
+def board_snapshots(problem: str, root: Path, fetch: bool = True) -> list[dict]:
+    """The problem's public leaderboard over time: <state>/leaderboard/<problem>.jsonl, one row per
+    snapshot ({ts, leader, leader_team, others: every other team's best speedup}). Appends a fresh
+    snapshot when the last one is older than BOARD_EVERY_S (okc leaderboard needs no token)."""
+    path = root / "leaderboard" / f"{problem}.jsonl"
+    snaps = read_jsonl(path)
+    if fetch and (not snaps or time.time() - snaps[-1]["ts"] > BOARD_EVERY_S):
+        try:
+            import okc_client
+            rows = okc_client.leaderboard(problem).get("rows") or []
+            if rows:
+                snap = {"ts": time.time(), "leader": rows[0]["speedup"], "leader_team": rows[0].get("team"),
+                        "others": sorted((r["speedup"] for r in rows if r.get("team") != TEAM), reverse=True)}
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a") as f:
+                    f.write(json.dumps(snap) + "\n")
+                snaps.append(snap)
+        except Exception as e:  # noqa: BLE001 -- offline: keep the last snapshot
+            print(f"leaderboard {problem}: {e}", file=sys.stderr)
+    return snaps
+
+
+def rank_on(snap: dict | None, y: float) -> dict | None:
+    """Where a score would place us on a board snapshot (ties go our way)."""
+    if not snap:
+        return None
+    others = snap["others"]
+    rank = 1 + sum(1 for v in others if v > y)
+    top10 = others[9] if len(others) >= 10 else None
+    return {"rank": rank, "of": len(others) + 1, "leader": snap["leader"], "leader_team": snap.get("leader_team"),
+            "top10": top10, "as_of": snap["ts"]}
+
+
 def fmt_time(ts: float) -> str:
     return dt.datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
@@ -204,13 +241,22 @@ def hover(pt: dict) -> str:
         lines.append(f"<b>competition score: {pt['y']:.4f}x</b>{ci_s}")
         if pt.get("flags"):
             lines.append(f"judge flags: {e(', '.join(map(str, pt['flags'])))[:160]}")
+    rk = pt.get("rank_now")
+    if rk:
+        gap = rk["leader"] / pt["y"] - 1
+        lines.append(f"<b>would rank #{rk['rank']} of {rk['of']}</b> on the current board"
+                     + (f" · top 10 needs {rk['top10']:.4f}x" if rk.get("top10") else "")
+                     + f" · #1 {e(str(rk['leader_team']))} {rk['leader']:.4f}x"
+                     + (f" ({gap:+.0%} from here)" if gap > 0 else " (we'd lead)"))
     if pt.get("withdrawn"):
         lines.append(f"<b>WITHDRAWN</b>: {e(pt['withdraw_reason'] or 'no reason recorded')}")
     lines.append(f"job {e(pt['job'])} · {fmt_time(pt['ts'])}")
     return "<br>".join(lines)
 
 
-def problem_data(problem: str, root: Path, ratio: dict) -> dict:
+def problem_data(problem: str, root: Path, ratio: dict, fetch_board: bool = False) -> dict:
+    snaps = board_snapshots(problem, root, fetch_board)
+    now_snap = snaps[-1] if snaps else None
     official, withdrawn = official_rows(problem, root)
     pts = []
     for r in official:
@@ -227,13 +273,18 @@ def problem_data(problem: str, root: Path, ratio: dict) -> dict:
     for i, p in enumerate(pts, 1):
         p["n"] = i
         p["time"] = fmt_time(p["ts"])
+        p["rank_now"] = rank_on(now_snap, p["y"])
+        then = [sn for sn in snaps if sn["ts"] <= p["ts"]]  # the board as it stood when this run finished
+        p["leader_then"] = then[-1]["leader"] if then else None
         p["hover"] = hover(p)
     scored = [p for p in pts if p["kind"] == "run" and not p["flags"] and not p["withdrawn"]]
     board = max(scored, key=lambda p: p["y"], default=None)
     latest = max(scored, key=lambda p: p["ts"], default=None)
     pick = lambda p: p and {k: p.get(k) for k in ("n", "y", "ci", "job", "label", "time")}
     counts = {k: sum(p["kind"] == k for p in pts) for k in ("check", "run", "local")}
-    return {"problem": problem, "points": pts, "board": pick(board), "latest_run": pick(latest),
+    leader = now_snap and {"y": now_snap["leader"], "team": now_snap.get("leader_team"), "time": fmt_time(now_snap["ts"]),
+                           "our_rank": rank_on(now_snap, board["y"]) if board else None}
+    return {"problem": problem, "points": pts, "board": pick(board), "latest_run": pick(latest), "leader": leader,
             "counts": dict(counts, total=len(pts)),
             "ratio": {k: v for k, v in ratio.items()},
             "calibration_rows": [{"label": r.get("label"), "child": r.get("child"), "job": r["job"],
@@ -247,12 +298,12 @@ def _common(r: dict) -> dict:
             "job": r.get("job", ""), "sha256": r.get("sha256", "")}
 
 
-def build(root: Path | None = None) -> dict:
+def build(root: Path | None = None, fetch_board: bool = False) -> dict:
     root = root or broker.state_root()
     rs = ratios(root)
     return {"generated": time.time(), "generated_str": fmt_time(time.time()), "state": str(root),
             "lock_fix": fmt_time(LOCK_FIX_TS),
-            "problems": [problem_data(p, root, rs[p]) for p in PROBLEMS]}
+            "problems": [problem_data(p, root, rs[p], fetch_board) for p in PROBLEMS]}
 
 
 # ── the page ─────────────────────────────────────────────────────────────
@@ -269,21 +320,21 @@ PAGE = r"""<!doctype html>
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --line: #b4b2a9;
-  --check: #2a78d6; --run: #eb6834; --local: #1baf7a; --withdrawn: #d03b3b; --stale: #b3261e;
+  --check: #2a78d6; --run: #eb6834; --local: #1baf7a; --withdrawn: #d03b3b; --stale: #b3261e; --leader: #8d5bd6;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --line: #5c5b57;
-    --check: #3987e5; --run: #d95926; --local: #199e70; --withdrawn: #e66767; --stale: #ff8a80;
+    --check: #3987e5; --run: #d95926; --local: #199e70; --withdrawn: #e66767; --stale: #ff8a80; --leader: #a77ef0;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --line: #5c5b57;
-  --check: #3987e5; --run: #d95926; --local: #199e70; --withdrawn: #e66767; --stale: #ff8a80;
+  --check: #3987e5; --run: #d95926; --local: #199e70; --withdrawn: #e66767; --stale: #ff8a80; --leader: #a77ef0;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink);
@@ -347,7 +398,9 @@ function render() {
       const c = p.counts, b = p.board, r = p.ratio;
       const basis = r.n ? r.source + ", " + r.n + " pair" + (r.n === 1 ? "" : "s") : r.source;
       card.innerHTML =
-        "<h2>" + p.problem + " · board <span class='board'>" + fx(b && b.y) + "</span> · " + c.total + " runs</h2>" +
+        "<h2>" + p.problem + " · board <span class='board'>" + fx(b && b.y) + "</span>" +
+        (p.leader && p.leader.our_rank ? " (#" + p.leader.our_rank.rank + " of " + p.leader.our_rank.of + ")" : "") +
+        (p.leader ? " · #1 " + fx(p.leader.y) : "") + " · " + c.total + " runs</h2>" +
         "<div class='sub" + (r.uncalibrated ? " warn" : "") + "'>" + c.check + " checks, " + c.run + " scored runs, " +
         c.local + " local · local points projected ×" + r.ratio.toFixed(4) + " (" + basis + ")" +
         (r.uncalibrated ? " · projection uncalibrated" : "") + "</div>";
@@ -384,7 +437,19 @@ function render() {
       hovertext: wd.map(q => q.hover), hovertemplate: "%{hovertext}<extra></extra>",
       marker: {symbol: "x-thin-open", size: 16, line: {color: css("--withdrawn"), width: 2}},
     });
+    const lt = pts.filter(q => q.leader_then != null);
+    if (lt.length) traces.push({
+      x: lt.map(q => q.n), y: lt.map(q => q.leader_then), name: "#1 on the board at the time", mode: "lines",
+      type: "scatter", line: {color: css("--leader"), width: 2, shape: "hv"}, hoverinfo: "skip",
+    });
     const shapes = [], annotations = [];
+    if (p.leader) {
+      shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: p.leader.y, y1: p.leader.y,
+                   line: {color: css("--leader"), width: 1.5, dash: "dash"}});
+      annotations.push({xref: "paper", x: 1, xanchor: "right", y: p.leader.y, yanchor: "bottom",
+                        text: "#1 now: " + p.leader.team + " " + fx(p.leader.y), showarrow: false,
+                        font: {size: 11, color: css("--leader")}});
+    }
     if (p.board) {
       shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: p.board.y, y1: p.board.y,
                    line: {color: css("--run"), width: 1, dash: "dash"}});
@@ -461,8 +526,8 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def generate(out: Path, refresh_s: int = 0, root: Path | None = None) -> dict:
-    data = build(root)
+def generate(out: Path, refresh_s: int = 0, root: Path | None = None, fetch_board: bool = False) -> dict:
+    data = build(root, fetch_board)
     out.mkdir(parents=True, exist_ok=True)
     write_atomic(out / "data.json", json.dumps(data, indent=1))
     write_atomic(out / "index.html", render_html(data, refresh_s))
@@ -477,7 +542,7 @@ def main():
     out = Path(a.out).expanduser() if a.out else broker.state_root() / "dashboard"
     while True:
         try:
-            data = generate(out, a.watch or 0)
+            data = generate(out, a.watch or 0, fetch_board=True)
             summary = ", ".join(f"{d['problem']} {d['counts']['total']}" for d in data["problems"])
             print(f"{data['generated_str']}: wrote {out / 'index.html'} ({summary} runs)", flush=True)
         except Exception as e:  # the campaigns write these files as we read them: try again next time
