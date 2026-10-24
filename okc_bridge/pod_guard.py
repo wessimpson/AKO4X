@@ -234,7 +234,7 @@ def loop(cfg) -> None:
                 stop_pod(cfg, pod, f"spend ${sp['usd']:.2f} reached the ${s['budget_usd']} budget")
                 (local.sdir() / "disabled").write_text(f"spend ${sp['usd']:.2f} reached the ${s['budget_usd']} budget")
                 continue
-        elif (local.sdir() / "ssh").exists():
+        elif p is not None and (local.sdir() / "ssh").exists():  # None = the status call failed (network): keep the address
             drop_ssh()
             log("pod isn't running; local benches will ask for it again")
         if (local.sdir() / "disabled").exists():
