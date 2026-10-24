@@ -101,6 +101,23 @@ def seconds_until_reset() -> float:
     return (nxt - now).total_seconds()
 
 
+def held(cfg: dict) -> float:
+    """Seconds until official evaluations open, 0 when they're open. With [schedule] official_window_h
+    set, they open only in the last that-many hours before each 00:00 UTC reset (the day's slots don't
+    carry over, so they're spent in one burst; local evaluations run the rest of the day)."""
+    w = cfg.get("schedule", {}).get("official_window_h")
+    if w is None:
+        return 0.0
+    return max(0.0, seconds_until_reset() - float(w) * 3600)
+
+
+def held_message(wait_s: float) -> str:
+    opens = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=wait_s)
+    return (f"official evaluations are held until {opens:%H:%M} UTC ({wait_s / 3600:.1f} h), the window before "
+            "the daily reset; nothing was spent. Iterate on scripts/local_bench.sh (the local H200) and keep your "
+            "best locally proven file ready for the window")
+
+
 def stopped() -> bool:
     """$AKO_OKC_STATE/STOP exists: start no new official evaluations (see stop_at.py)."""
     return (state_root() / "STOP").exists()
@@ -353,6 +370,8 @@ def cmd_eval(a, cfg) -> dict:
             return gate_row(a.problem, a.child, a.label, sha, "STOPPED",
                             "the campaign has been stopped; no new official evaluations. "
                             "Write your synthesis and end the session")
+        if (wait_s := held(cfg)) and not inflight_by_sha(a.problem, sha):
+            return gate_row(a.problem, a.child, a.label, sha, "HELD", held_message(wait_s))
         pending = inflight_by_sha(a.problem, sha)
         if not pending:
             b = budget(a.problem, cfg)
@@ -424,6 +443,8 @@ def cmd_promote_best(a, cfg) -> dict:
     with global_lock():
         if stopped():
             return {"status": "STOPPED", "message": "the campaign has been stopped"}
+        if wait_s := held(cfg):
+            return {"status": "HELD", "message": held_message(wait_s)}
         bud = budget(a.problem, cfg)
         if bud["next_kind"] != "run":
             return {"status": "NOOP", "message": f"next slot is {bud['next_kind']}, not a run", "budget": bud}
@@ -440,6 +461,9 @@ def cmd_wait_reset(a, cfg) -> dict:
             return {"status": "TRACK_CLOSED"}
         if stopped():
             return {"status": "STOPPED"}
+        if wait_s := held(cfg):  # the window opens before any slot can be spent
+            time.sleep(min(wait_s + 5, 1800))
+            continue
         try:
             b = budget(a.problem, cfg)
             if b["next_kind"]:

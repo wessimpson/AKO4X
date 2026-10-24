@@ -8,11 +8,14 @@ checks_per_run = 2
 # Never spend the last N of each kind (keep some for manual work). 0 = use everything.
 reserve_checks = 0
 reserve_runs = 0
+# Official evaluations open only in the last N hours before each 00:00 UTC reset (one burst;
+# the local H200 the rest of the day). Unset = any time.
+official_window_h = 6
 
 [round]
-# Official evaluations one child env (one round) may spend. 6 = two check/check/run cycles,
-# so a problem gets ~5 rounds a day and the master steers between them.
-max_evals = 6
+# Official evaluations one child env (one round) may spend. 12 = four check/check/run cycles: with
+# official_window_h the day's slots are spent in a few rounds inside the window.
+max_evals = 12
 
 [rate]
 # okc allows 6 submissions a minute per token and 10 per account; keep well under.

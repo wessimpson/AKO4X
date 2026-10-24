@@ -78,5 +78,18 @@ class Reattach(unittest.TestCase):
         self.assertEqual(again["label"], "iter-1")
 
 
+class Window(unittest.TestCase):
+    def test_official_evaluations_open_only_in_the_window(self):
+        real = broker.seconds_until_reset
+        try:
+            broker.seconds_until_reset = lambda: 10 * 3600
+            self.assertEqual(broker.held({"schedule": {"official_window_h": 6}}), 4 * 3600)
+            broker.seconds_until_reset = lambda: 5 * 3600
+            self.assertEqual(broker.held({"schedule": {"official_window_h": 6}}), 0)
+            self.assertEqual(broker.held({"schedule": {}}), 0)
+        finally:
+            broker.seconds_until_reset = real
+
+
 if __name__ == "__main__":
     unittest.main()
