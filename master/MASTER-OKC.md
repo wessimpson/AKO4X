@@ -63,3 +63,10 @@ Subs now have `bash scripts/local_bench.sh` (okc_bridge/local.py): a copy of the
 ## Keep the local H200 busy
 
 While the local H200 is up (`scripts/local_bench.sh` answers, not `LOCAL_UNAVAILABLE`), this campaign always has a sub running. When a round ends and today's official slots are spent, start the next round right away as a **local-only round** (the sub iterates on `local_bench.sh` and ends with its best locally proven file); keep the reset wait running in the background. At the reset, the next round's first official bench is the last local round's file. The watchdog reminds a master whose campaign has had no sub for 10 minutes.
+
+## The official window (from the user, 2026-10-23)
+
+Official evaluations open only in the last `[schedule] official_window_h` hours before each 00:00 UTC reset (6 h: 18:00-24:00 UTC, 1-7 pm CDT). Before that the broker answers `HELD` and spends nothing, and `master.okc_wait_for_budget` returns only once the window opens.
+
+- Outside the window every round is a **local-only round**: the sub iterates on `scripts/local_bench.sh` and ends with its best locally proven file and a synthesis. Chain local rounds back to back, each starting from the previous one's file, so the local H200 never idles.
+- When the window opens, spend the day's slots on **locally proven files only**, best first: the round that opens the window benches the latest local round's file, then each further locally proven improvement. A round may spend up to `[round] max_evals` (12). Plan the window so every slot is used before the reset, since they don't carry over.
